@@ -10,12 +10,21 @@ export default function PreloaderOverlay({ onComplete }: { onComplete: () => voi
   useEffect(() => {
     let mounted = true;
 
+    // Safety maximum timer (2.5s) to guarantee preloader NEVER hangs on any network or mobile browser
+    const safetyTimer = setTimeout(() => {
+      if (mounted && !isReady) {
+        setProgress(100);
+        setStatusText('AUDIO ENGINE READY — CLICK BELOW TO START');
+        setIsReady(true);
+      }
+    }, 2500);
+
     const startPreload = async () => {
       // Image preloading
       const img = new Image();
       img.src = '/clearbox-device.jpg';
 
-      // Audio preloading
+      // Audio ArrayBuffer pre-fetching over HTTP
       await audioEngine.preloadAllAssets((pct, text) => {
         if (!mounted) return;
         setProgress(pct);
@@ -24,7 +33,7 @@ export default function PreloaderOverlay({ onComplete }: { onComplete: () => voi
 
       if (mounted) {
         setProgress(100);
-        setStatusText('ALL AUDIO ASSETS PRE-BUFFERED IN MEMORY (ZERO LATENCY READY)');
+        setStatusText('ALL AUDIO ASSETS PRE-BUFFERED (ZERO LATENCY READY)');
         setIsReady(true);
       }
     };
@@ -33,8 +42,9 @@ export default function PreloaderOverlay({ onComplete }: { onComplete: () => voi
 
     return () => {
       mounted = false;
+      clearTimeout(safetyTimer);
     };
-  }, []);
+  }, [isReady]);
 
   const handleEnter = async () => {
     await audioEngine.initAudioContext();

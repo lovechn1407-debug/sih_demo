@@ -1,4 +1,4 @@
-// CLEARBOX Web Audio Engine — Dual-Track Synchronized Crossfade & Preloader Buffer
+// CLEARBOX Web Audio Engine — Dual-Track Synchronized Crossfade & Fail-Safe Asset Preloader
 
 export interface AudioEngineMetrics {
   snr: number;
@@ -17,8 +17,9 @@ class ClearboxAudioEngine {
   private inputAnalyser: AnalyserNode | null = null;
   private outputAnalyser: AnalyserNode | null = null;
 
-  // Audio Buffer Cache
-  private bufferCache: Map<string, AudioBuffer> = new Map();
+  // ArrayBuffer & AudioBuffer Caches (Fail-safe for browser autoplay policies)
+  private rawArrayBuffers: Map<string, ArrayBuffer> = new Map();
+  private decodedAudioBuffers: Map<string, AudioBuffer> = new Map();
 
   // Radio Signal Dual-Track Nodes (Raw & Enhanced MP3s)
   private signalBus: GainNode | null = null;
@@ -84,7 +85,7 @@ class ClearboxAudioEngine {
     this.ancLowpassFilter.connect(this.masterGain);
   }
 
-  // Pre-buffer and pre-decode all audio assets into RAM before workstation boot
+  // Pre-fetch raw array buffers over HTTP (Does NOT require AudioContext user gesture!)
   public async preloadAllAssets(onProgress?: (percent: number, statusText: string) => void): Promise<void> {
     const assets = [
       { url: '/audio/radio-walkie-talkie.mp3', label: 'Walkie-Talkie Radio Stream' },
@@ -98,7 +99,15 @@ class ClearboxAudioEngine {
         const pct = Math.round((completed / assets.length) * 100);
         onProgress(pct, `Pre-buffering: ${item.label}...`);
       }
-      await this.loadAudioBuffer(item.url);
+      try {
+        const res = await fetch(item.url);
+        if (res.ok) {
+          const buf = await res.arrayBuffer();
+          this.rawArrayBuffers.set(item.url, buf);
+        }
+      } catch (e) {
+        console.warn(`Preload fetch skipped for ${item.url}:`, e);
+      }
       completed++;
     }
 
@@ -110,19 +119,26 @@ class ClearboxAudioEngine {
   // Load and decode MP3 audio file into AudioBuffer
   private async loadAudioBuffer(url: string): Promise<AudioBuffer> {
     await this.initAudioContext();
-    if (this.bufferCache.has(url)) {
-      return this.bufferCache.get(url)!;
+
+    if (this.decodedAudioBuffers.has(url)) {
+      return this.decodedAudioBuffers.get(url)!;
     }
 
     try {
-      const response = await fetch(url);
-      const arrayBuffer = await response.arrayBuffer();
+      let arrayBuffer = this.rawArrayBuffers.get(url);
+      if (!arrayBuffer) {
+        const response = await fetch(url);
+        arrayBuffer = await response.arrayBuffer();
+        this.rawArrayBuffers.set(url, arrayBuffer);
+      }
+
       if (!this.ctx) throw new Error("AudioContext not ready");
-      const decodedBuffer = await this.ctx.decodeAudioData(arrayBuffer);
-      this.bufferCache.set(url, decodedBuffer);
+      // Slice arrayBuffer so original is preserved if re-decoding is needed
+      const decodedBuffer = await this.ctx.decodeAudioData(arrayBuffer.slice(0));
+      this.decodedAudioBuffers.set(url, decodedBuffer);
       return decodedBuffer;
     } catch (e) {
-      console.warn(`Failed to fetch ${url}, generating fallback buffer:`, e);
+      console.warn(`Failed to decode ${url}, generating fallback buffer:`, e);
       return this.createFallbackBuffer(5);
     }
   }
